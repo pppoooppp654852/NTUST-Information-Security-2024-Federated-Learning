@@ -7,6 +7,8 @@ from collections import OrderedDict
 from models import ViT_B_16
 from torchvision import transforms, datasets
 from torch.utils.data import DataLoader, random_split
+from opacus import PrivacyEngine
+from typing import List
 
 # Define transformations
 transform = transforms.Compose([
@@ -26,6 +28,21 @@ class FlowerClient(fl.client.NumPyClient):
         self.model = ViT_B_16(self.num_classes).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
         self.criterion = nn.CrossEntropyLoss()
+        
+    def apply_differential_privacy(self, epsilon: float, epochs: int, delta: float | None = None, max_grad_norm: float | List[float] = 1.0) -> None:
+        if delta is None:
+            delta = 1 / len(self.dataset)
+        diff_pri_eng = PrivacyEngine()
+        self.model, self.optimizer, self.train_loader = diff_pri_eng.make_private_with_epsilon(
+            module=self.model,
+            optimizer=self.optimizer,
+            data_loader=self.train_loader,
+            target_epsilon=epsilon,
+            target_delta=delta,
+            epochs=epochs,
+            max_grad_norm=max_grad_norm
+        )
+        self.model.to(self.device)
 
     def get_parameters(self, config):
         return [val.cpu().numpy() for _, val in self.model.state_dict().items()]
@@ -65,6 +82,8 @@ class FlowerClient(fl.client.NumPyClient):
     
 
 if __name__ == "__main__":
-    data_path = sys.argv[1]  # Pass the data path as a command line argument
+    data_path = sys.argv[1]  # Pass the data path as the first command line argument
+    epsilon = float(sys.argv[2]) # Pass epsilon as the second command line argument
     client = FlowerClient(data_path)
+    client.apply_differential_privacy(epsilon, 40)
     fl.client.start_numpy_client(server_address="localhost:8080", client=client.to_client())
