@@ -11,7 +11,7 @@ transform = transforms.Compose([
 ])
 
 # Create ImageFolder dataset
-root_dir = "dataset"
+root_dir = "dataset/virus_share_177"
 dataset = datasets.ImageFolder(root=root_dir, transform=transform)
 num_classes = len(dataset.classes)
 
@@ -35,9 +35,6 @@ part_size = total_size // 3
 part1, part2, remaining = random_split(train_dataset, [part_size, part_size, total_size - 2 * part_size])
 part3, _ = random_split(remaining, [part_size, len(remaining) - part_size])
 part3 = part3.dataset
-
-
-print(num_classes)
 
 # Create directories for each part
 os.makedirs('./data_split', exist_ok=True)

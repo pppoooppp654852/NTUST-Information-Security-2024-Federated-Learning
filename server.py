@@ -52,7 +52,7 @@ class AggregateCustomMetricStrategy(fl.server.strategy.FedAvg):
 
 # Initialize and start the server with the custom strategy
 strategy = AggregateCustomMetricStrategy()
-fl.server.start_server(server_address="[::]:8080", config=fl.server.ServerConfig(num_rounds=40), strategy=strategy)
+fl.server.start_server(server_address="0.0.0.0:8080", config=fl.server.ServerConfig(num_rounds=100), strategy=strategy)
 
 save_path = "results/federated_learning.json"
 with open(save_path, "w") as file:

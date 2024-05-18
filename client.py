@@ -5,10 +5,15 @@ from torch.utils.data import DataLoader
 import sys
 from collections import OrderedDict
 from models import ViT_B_16
-from torchvision import transforms, datasets
-from torch.utils.data import DataLoader, random_split
+from torchvision import transforms
+from torch.utils.data import DataLoader
 from opacus import PrivacyEngine
 from typing import List
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm.auto import tqdm
+import torchvision.models as models
+from opacus.validators import ModuleValidator
+
 
 # Define transformations
 transform = transforms.Compose([
@@ -21,12 +26,18 @@ class FlowerClient(fl.client.NumPyClient):
     def __init__(self, data_path):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dataset = torch.load(data_path)
-        self.train_loader = DataLoader(self.dataset, batch_size=16, shuffle=True)
+        self.train_loader = DataLoader(self.dataset, batch_size=8, shuffle=True)
         self.test_loader = DataLoader(torch.load("data_split/val.pt"), batch_size=16, shuffle=False)
         print(type(self.test_loader))
         self.num_classes = len(self.test_loader.dataset.dataset.classes)
-        self.model = ViT_B_16(self.num_classes).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
+        # self.model = ViT_B_16(self.num_classes).to(self.device)
+        weights = models.ResNet18_Weights.DEFAULT
+        self.model = models.resnet18(weights)
+        self.model.fc = torch.nn.Linear(512, self.num_classes)
+        self.model = ModuleValidator.fix(self.model)
+        self.model.to(self.device)
+        
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
         self.criterion = nn.CrossEntropyLoss()
         
     def apply_differential_privacy(self, epsilon: float, epochs: int, delta: float | None = None, max_grad_norm: float | List[float] = 1.0) -> None:
@@ -55,7 +66,7 @@ class FlowerClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         self.set_parameters(parameters)
         self.model.train()
-        for X, y in self.train_loader:
+        for X, y in tqdm(self.train_loader):
             X, y = X.to(self.device), y.to(self.device)
             self.optimizer.zero_grad()
             output = self.model(X)
@@ -83,7 +94,8 @@ class FlowerClient(fl.client.NumPyClient):
 
 if __name__ == "__main__":
     data_path = sys.argv[1]  # Pass the data path as the first command line argument
-    epsilon = float(sys.argv[2]) # Pass epsilon as the second command line argument
+    # epsilon = float(sys.argv[2]) # Pass epsilon as the second command line argument
+    epsilon = 100
     client = FlowerClient(data_path)
-    client.apply_differential_privacy(epsilon, 40)
-    fl.client.start_numpy_client(server_address="localhost:8080", client=client.to_client())
+    client.apply_differential_privacy(epsilon, 100)
+    fl.client.start_numpy_client(server_address="192.168.196.163:8080", client=client.to_client())

@@ -6,7 +6,129 @@ import json
 from tqdm.auto import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from models import ViT_B_16
-from utils import EarlyStopping, train_step, test_step, calculate_metrics
+from sklearn.metrics import precision_score, recall_score, f1_score
+from pathlib import Path
+import warnings
+
+# Ignore all warnings
+warnings.filterwarnings("ignore")
+
+class EarlyStopping:
+    def __init__(self, patience=5, verbose=False, delta=0, path=None, save=True):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = float('inf')
+        self.delta = delta
+        if not Path(path).exists():
+            Path(path).mkdir()
+        self.path = path
+        self.save = save
+        
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            if self.save:
+                self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            if self.save:
+                self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        '''Saves model when validation loss decrease.'''
+        if self.verbose:
+            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
+        checkpoint_path = Path(self.path) / 'deep_learning.pt'
+        torch.save(model.state_dict(), str(checkpoint_path))
+        self.val_loss_min = val_loss
+    
+def train_step(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    loss_fn: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+):
+    model.train()
+    train_loss, train_acc = 0, 0
+    all_preds, all_labels = [], []
+    
+    progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc="Training")
+    
+    for batch, (X, y) in progress_bar:
+        X, y = X.to(device), y.to(device)
+        y_pred = model(X)
+        loss = loss_fn(y_pred, y)
+        train_loss += loss.item()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        y_pred_class = torch.argmax(torch.softmax(y_pred, dim=1), dim=1)
+        train_acc += (y_pred_class == y).sum().item() / len(y_pred)
+
+        all_preds.extend(y_pred_class.detach().cpu().numpy())
+        all_labels.extend(y.detach().cpu().numpy())
+        
+        # Update progress bar description
+        progress_bar.set_description(f"Training - Loss: {train_loss/(batch+1):.4f}, Acc: {train_acc/(batch+1):.4f}")
+
+    train_loss = train_loss / len(dataloader)
+    train_acc = train_acc / len(dataloader)
+    return train_loss, train_acc, torch.tensor(all_preds), torch.tensor(all_labels)
+
+def test_step(
+    model: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    loss_fn: torch.nn.Module,
+    device: torch.device,
+):
+    model.eval()
+    test_loss, test_acc = 0, 0
+    all_preds, all_labels = [], []
+    
+    with torch.inference_mode():
+        progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc="Testing")
+        
+        for batch, (X, y) in progress_bar:
+            X, y = X.to(device), y.to(device)
+            y_pred = model(X)
+            loss = loss_fn(y_pred, y)
+            test_loss += loss.item()
+
+            y_pred_class = y_pred.argmax(dim=1)
+            test_acc += (y_pred_class == y).sum().item() / len(y_pred_class)
+
+            all_preds.extend(y_pred_class.detach().cpu().numpy())
+            all_labels.extend(y.detach().cpu().numpy())
+            
+            # Update progress bar description
+            progress_bar.set_description(f"Testing - Loss: {test_loss/(batch+1):.4f}, Acc: {test_acc/(batch+1):.4f}")
+
+    test_loss = test_loss / len(dataloader)
+    test_acc = test_acc / len(dataloader)
+    return test_loss, test_acc, torch.tensor(all_preds), torch.tensor(all_labels)
+
+def calculate_metrics(y_true, y_pred):
+    y_true = y_true.cpu().numpy()
+    y_pred = y_pred.cpu().numpy()
+    precision = precision_score(y_true, y_pred, average='macro')
+    recall = recall_score(y_true, y_pred, average='macro')
+    f1 = f1_score(y_true, y_pred, average='macro')
+    return precision, recall, f1
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using {device}")
@@ -19,8 +141,9 @@ transform = transforms.Compose([
 ])
 
 # Create ImageFolder dataset
-root_dir = "dataset"
-dataset = datasets.ImageFolder(root=root_dir, transform=transform)
+dataset_name = 'virus_share_177'
+dataset_dir = Path("dataset") / dataset_name
+dataset = datasets.ImageFolder(root=dataset_dir, transform=transform)
 
 # Define the ratio for splitting
 train_ratio = 0.9
@@ -50,26 +173,22 @@ vit_b_16.to(device)
 
 
 # training configurations
-initial_lr = 1e-7
+initial_lr = 1e-8
 peak_lr = 0.0005
 num_epochs = 50
-num_warmup_epochs = 5
+num_warmup_epochs = 10
 num_batches_per_epoch = len(train_loader)
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(vit_b_16.parameters(), lr=initial_lr)
-early_stopping = EarlyStopping(patience=20, verbose=True, path='models/deep_learning.pt')
+optimizer = optim.Adam(vit_b_16.parameters(), lr=initial_lr, weight_decay=0.01)
+early_stopping = EarlyStopping(patience=10, verbose=True, path='models/', save=False)
 
 # Setup schedulers
 scheduler_cosine = CosineAnnealingLR(optimizer, T_max=num_epochs - num_warmup_epochs, eta_min=0)
 
 
-# training loop
-results = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [],
-           "train_precision": [], "train_recall": [], "train_f1": [],
-           "val_precision": [], "val_recall": [], "val_f1": [],
-           "learning_rate": []}
 # Loop through training and testing steps for a number of epochs
-for epoch in tqdm(range(num_epochs)):
+results = {"loss": [], "accuracy": []}
+for epoch in range(num_epochs):
     train_loss, train_acc, train_preds, train_labels = train_step(
         model=vit_b_16,
         dataloader=train_loader,
@@ -86,7 +205,7 @@ for epoch in tqdm(range(num_epochs)):
     )
     
     # Warmup handling
-    if epoch < num_warmup_epochs:
+    if epoch <= num_warmup_epochs:
         lr_scale = (peak_lr - initial_lr) / num_warmup_epochs
         lr = initial_lr + lr_scale * epoch
         for param_group in optimizer.param_groups:
@@ -106,7 +225,7 @@ for epoch in tqdm(range(num_epochs)):
         f"train_acc: {train_acc:.4f} | "
         f"test_loss: {val_loss:.4f} | "
         f"test_acc: {val_acc:.4f} | "
-        f"learning_rate: {current_lr}"
+        f"learning_rate: {current_lr:.6f}"
     )
     
     early_stopping(val_loss, vit_b_16)
@@ -115,21 +234,10 @@ for epoch in tqdm(range(num_epochs)):
         break
 
     # Store metrics
-    results["train_loss"].append(train_loss)
-    results["train_acc"].append(train_acc)
-    results["train_precision"].append(train_precision)
-    results["train_recall"].append(train_recall)
-    results["train_f1"].append(train_f1)
+    results["loss"].append(val_loss)
+    results["accuracy"].append(val_acc)
 
-    results["val_loss"].append(val_loss)
-    results["val_acc"].append(val_acc)
-    results["val_precision"].append(val_precision)
-    results["val_recall"].append(val_recall)
-    results["val_f1"].append(val_f1)
-
-    results["learning_rate"].append(current_lr)
-
-save_path = "results/deep_learning.json"
+save_path = f"results/{dataset_name}.json"
 with open(save_path, "w") as file:
     json.dump(results, file)
 print("Results have been saved as", save_path)
